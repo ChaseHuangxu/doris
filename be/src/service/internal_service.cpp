@@ -542,7 +542,7 @@ void PInternalServiceImpl::tablet_fetch_data(google::protobuf::RpcController* co
                                              const PTabletKeyLookupRequest* request,
                                              PTabletKeyLookupResponse* response,
                                              google::protobuf::Closure* done) {
-    bool ret = _heavy_work_pool.try_offer([this, controller, request, response, done]() {
+    bool ret = _light_work_pool.try_offer([this, controller, request, response, done]() {
         [[maybe_unused]] brpc::Controller* cntl = static_cast<brpc::Controller*>(controller);
         brpc::ClosureGuard guard(done);
         Status st = _tablet_fetch_data(request, response);
@@ -728,10 +728,14 @@ void PInternalServiceImpl::send_data(google::protobuf::RpcController* controller
         } else {
             auto pipe = stream_load_ctx->pipe;
             for (int i = 0; i < request->data_size(); ++i) {
-                PDataRow* row = new PDataRow();
+                std::unique_ptr<PDataRow> row(new PDataRow());
                 row->CopyFrom(request->data(i));
-                pipe->append_and_flush(reinterpret_cast<char*>(&row), sizeof(row),
-                                       sizeof(row) + row->ByteSizeLong());
+                Status s = pipe->append(std::move(row));
+                if (!s.ok()) {
+                    response->mutable_status()->set_status_code(1);
+                    response->mutable_status()->add_error_msgs(s.to_string());
+                    return;
+                }
             }
             response->mutable_status()->set_status_code(0);
         }
